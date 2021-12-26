@@ -4,7 +4,15 @@ import (
 	"fmt"
 	"github.com/gokins/gokins/engine"
 	"github.com/gokins/gokins/models"
+	"github.com/gokins/gokins/thirdapi"
+	"github.com/gokins/gokins/thirdapi/giteaapi"
+	"github.com/gokins/gokins/thirdapi/giteeapi"
+	"github.com/gokins/gokins/thirdapi/giteepremiumapi"
+	"github.com/gokins/gokins/thirdapi/githubapi"
+	"github.com/gokins/gokins/thirdapi/gitlabapi"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -40,6 +48,7 @@ func (c *PipelineController) Routes(g gin.IRoutes) {
 	g.POST("/vars", util.GinReqParseJson(c.vars))
 	g.POST("/var/save", util.GinReqParseJson(c.varSave))
 	g.POST("/var/del", util.GinReqParseJson(c.varDel))
+	g.POST("/search/branch", util.GinReqParseJson(c.branch))
 }
 func (PipelineController) orgPipelines(c *gin.Context, m *hbtp.Map) {
 	orgId := m.GetString("orgId")
@@ -760,4 +769,57 @@ func (PipelineController) varDel(c *gin.Context, m *hbtp.Map) {
 		return
 	}
 	c.String(200, "ok")
+}
+func (PipelineController) branch(c *gin.Context, m *hbtp.Map) {
+	pipelineId := m.GetString("id")
+	tpc := &model.TPipelineConf{}
+	_, err := comm.Db.Where("pipeline_id=?", pipelineId).Get(tpc)
+	if err != nil {
+		c.String(500, "db err:"+err.Error())
+		return
+	}
+	tp := &model.TPipeline{}
+	_, err = comm.Db.Where("id=?", pipelineId).Get(tp)
+	if err != nil {
+		c.String(500, "db err:"+err.Error())
+		return
+	}
+	var repositoryService thirdapi.RepositoryService
+	var gitType string
+	if strings.Contains(tpc.Url, "gitee") {
+		repositoryService = &giteeapi.RepositoryService{}
+		gitType = "gitee"
+	} else if strings.Contains(tpc.Url, "github") {
+		repositoryService = &githubapi.RepositoryService{}
+		gitType = "github"
+	} else if strings.Contains(tpc.Url, "gitlab") {
+		repositoryService = &gitlabapi.RepositoryService{}
+		gitType = "gitlab"
+	} else if strings.Contains(tpc.Url, "giteepremiumapi") {
+		repositoryService = &giteepremiumapi.RepositoryService{}
+		gitType = "giteepremiumapi"
+	} else if strings.Contains(tpc.Url, "gitea") {
+		repositoryService = &giteaapi.RepositoryService{}
+		gitType = "gitea"
+	} else {
+		c.JSON(http.StatusForbidden, "git type not support now")
+		return
+	}
+	host, err := url.Parse(tpc.Url)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "git url error")
+		return
+	}
+	_, err = comm.GetThirdApi(gitType, host.Scheme+"://"+host.Host)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "get git client error")
+		return
+	}
+
+	branches, err := repositoryService.GetRepoBranches(tpc.AccessToken, tpc.Username, tp.Name)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "get remote branches error")
+		return
+	}
+	c.JSON(http.StatusOK, branches)
 }
